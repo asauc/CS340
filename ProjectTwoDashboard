@@ -1,0 +1,189 @@
+# Configure the necessary Python module imports
+import dash_leaflet as dl
+from dash import dcc
+from dash import html
+import plotly.express as px
+from dash import dash_table
+from dash.dependencies import Input, Output
+from jupyter_dash import JupyterDash  # Import JupyterDash
+import base64
+import os
+import pandas as pd
+
+# CRUD Python module import
+from Animal_Shelter import AnimalShelter
+
+# Data Manipulation / Model
+username = "aacuser"
+password = "SNHU1234"
+host = "nv-desktop-services.apporto.com"
+port = 33321
+db_name = "AAC"
+collection_name = "animals"
+
+# Create an instance of your AnimalShelter CRUD
+shelter = AnimalShelter(username, password, host, port, db_name, collection_name)
+
+# Fetch all data from the MongoDB collection
+df = pd.DataFrame.from_records(shelter.read({}))
+
+if '_id' in df.columns:  # Check if the '_id' column exists before attempting to drop it
+    df.drop(columns=['_id'], inplace=True) 
+
+# Correct the file path to your actual image file
+image_filename = '/home/ashlynsaucier_snhu/GraziosoSalvareLogo.png'
+
+# Verify that the path points to a file, not a directory
+if not os.path.isfile(image_filename):
+    raise FileNotFoundError(f"The file at {image_filename} does not exist or is a directory.")
+
+# Load and encode the Grazioso Salvare logo
+with open(image_filename, 'rb') as image_file:
+    encoded_image = base64.b64encode(image_file.read()).decode()
+
+# Dashboard Layout / View
+app = JupyterDash(__name__)
+
+app.layout = html.Div([
+    html.Div(id='hidden-div', style={'display': 'none'}),
+    html.Div(
+        className='text-center',  # Add a class for centering
+        children=[
+            html.B(html.H1('SNHU CS-340 Animal Shelter Dashboard - Ashlyn Saucier')),  # Add your unique identifier here
+            html.Hr(),
+            html.Img(src=f'data:image/png;base64,{encoded_image}', style={'width': '300px', 'display': 'block', 'margin': '0 auto'})  # Center image
+        ]
+    ),
+    html.Hr(),
+
+
+    # Interactive Filtering Options
+    html.Div([
+        dcc.Dropdown(
+            id='filter-type',
+            options=[
+                {'label': 'Water Rescue', 'value': 'Water Rescue'},
+                {'label': 'Mountain or Wilderness Rescue', 'value': 'Mountain or Wilderness Rescue'},
+                {'label': 'Disaster or Individual Tracking', 'value': 'Disaster or Individual Tracking'},
+                {'label': 'Reset', 'value': 'Reset'}
+            ],
+            value='Reset'
+        ),
+  
+    ]),
+
+    html.Hr(),
+
+    # Data Table
+    dash_table.DataTable(
+        id='datatable-id',
+        columns=[{"name": i, "id": i, "deletable": False, "selectable": True} for i in df.columns],
+        data=df.to_dict('records'),
+        page_size=10,  # Pagination with 10 rows per page
+        row_selectable="single",  # Allow single row selection
+        selected_rows=[0],  # Select the first row by default
+        style_table={'overflowX': 'auto'},
+        style_cell={'textAlign': 'left'},
+        style_header={
+            'backgroundColor': 'rgb(230, 230, 230)',
+            'fontWeight': 'bold'
+        },
+        style_data={
+            'whiteSpace': 'normal',
+            'height': 'auto'
+        }
+    ),
+
+    html.Br(),
+    html.Hr(),
+
+    # Charts and Map
+    html.Div(className='row', style={'display': 'flex', 'flexDirection': 'column'}, children=[
+        html.Div(id='graph-id', className='col s12 m6'),
+        html.Div(id='graph-id2', className='col s12 m6')
+    ]),
+
+    html.Div(id='map-id', className='col s12', style={'width': '75%', 'height': '300px'})  # Ensure map-id is in the layout
+])
+
+# Suppress callback exceptions for dynamically generated components
+app.config.suppress_callback_exceptions = True
+
+#############################################
+# Interaction Between Components / Controller
+#############################################
+
+# Callback to filter the data table and charts based on dropdown selection
+@app.callback(
+    [Output('datatable-id', 'data'),
+     Output('graph-id', 'children'),
+     Output('graph-id2', 'children')],
+    [Input('filter-type', 'value')]
+)
+def update_table_and_charts(filter_type):
+    # Define breed filters based on rescue type
+    if filter_type == 'Water Rescue':
+        filtered_df = df[df['breed'].str.contains('Labrador Retriever|Newfoundland', case=False, na=False)]
+    elif filter_type == 'Mountain or Wilderness Rescue':
+        filtered_df = df[df['breed'].str.contains('German Shepherd|Bernese Mountain Dog', case=False, na=False)]
+    elif filter_type == 'Disaster or Individual Tracking':
+        filtered_df = df[df['breed'].str.contains('Bloodhound|Beagle', case=False, na=False)]
+    else:
+        # If 'Reset' or other value is selected, do not filter
+        filtered_df = df
+
+    # Update data table
+    table_data = filtered_df.to_dict('records')
+
+    # Update bar chart - Animal Type Count
+    bar_fig = px.bar(filtered_df, x='animal_type', title="Animal Type Count")
+    bar_chart = dcc.Graph(figure=bar_fig)
+
+    # Update pie chart - Outcome Type Distribution
+    if not filtered_df.empty and 'outcome_type' in filtered_df.columns:
+        pie_fig = px.pie(filtered_df, names='outcome_type', title="Distribution of Outcome Types")
+    else:
+        pie_fig = px.pie(title="No Data Available", names=[], values=[])
+
+    pie_chart = dcc.Graph(figure=pie_fig)
+
+
+    return table_data, bar_chart, pie_chart
+
+# Callback to update the map based on the selected row in the data table
+@app.callback(
+    Output('map-id', 'children'),
+    [Input('datatable-id', 'derived_virtual_data'),
+     Input('datatable-id', 'derived_virtual_selected_rows')]
+)
+def update_map(viewData, index):
+    dff = pd.DataFrame.from_dict(viewData)
+
+    # Ensure a row is selected; if not, select the first row
+    if index is None or len(index) == 0:
+        row = 0
+    else:
+        row = index[0]
+
+    # Check for valid lat/lon data, default to Austin coordinates if missing
+    lat = dff.iloc[row]['location_lat'] if pd.notna(dff.iloc[row]['location_lat']) else 30.75
+    lon = dff.iloc[row]['location_long'] if pd.notna(dff.iloc[row]['location_long']) else -97.48
+
+    # Return the updated map
+    return [
+        dl.Map(style={'width': '75%', 'height': '200px'},
+               center=[lat, lon], zoom=10, children=[
+            dl.TileLayer(id="base-layer-id"),
+            # Marker with tooltip and popup for selected row
+            dl.Marker(position=[lat, lon], children=[
+                dl.Tooltip(dff.iloc[row]['breed']),  # Animal breed
+                dl.Popup([
+                    html.H1("Animal Name"),
+                    html.P(dff.iloc[row]['name'])  # Animal name
+                ])
+            ])
+        ])
+    ]
+
+# Run the dashboard server with inline mode in Jupyter
+app.run_server(mode='inline', debug=True, port=33321)
